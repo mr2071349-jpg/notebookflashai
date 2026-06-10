@@ -604,7 +604,7 @@ ${data.notes.map(n => `* ${n}`).join('\n')}
                 <div className="text-center">
                   <p className="text-sm font-semibold text-on-surface">Drag & drop your video here</p>
                   <p className="text-xs text-on-surface-variant mt-1">Or click to browse from local computer</p>
-                  <p className="text-[10px] text-white/20 mt-4 uppercase tracking-widest font-label-caps">MP4, WEBM, AVI, MOV up to 200MB</p>
+                  <p className="text-[10px] text-white/20 mt-4 uppercase tracking-widest font-label-caps">MP4, WEBM, AVI, MOV up to 2GB</p>
                 </div>
                 <input 
                   type="file" 

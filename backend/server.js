@@ -39,7 +39,7 @@ const storage = multer.diskStorage({
 
 const upload = multer({
   storage: storage,
-  limits: { fileSize: 200 * 1024 * 1024 }, // 200MB limit
+  limits: { fileSize: 2 * 1024 * 1024 * 1024 }, // 2GB limit
   fileFilter: (req, file, cb) => {
     const filetypes = /mp4|webm|avi|mov|mkv/;
     const extname = filetypes.test(path.extname(file.originalname).toLowerCase());
@@ -136,7 +136,7 @@ app.post('/api/summarize', upload.single('video'), async (req, res) => {
     // Wait for the video to be processed (status ACTIVE)
     let isProcessed = false;
     let attempts = 0;
-    const maxAttempts = 60; // 5 minutes max (5s interval)
+    const maxAttempts = 180; // 15 minutes max (5s interval)
 
     while (!isProcessed && attempts < maxAttempts) {
       attempts++;
@@ -255,7 +255,25 @@ app.post('/api/summarize', upload.single('video'), async (req, res) => {
   }
 });
 
+// Error handling middleware
+app.use((err, req, res, next) => {
+  console.error("Global Error Handler:", err);
+  if (err instanceof multer.MulterError) {
+    if (err.code === 'LIMIT_FILE_SIZE') {
+      return res.status(400).json({ error: 'Upload failed: File is too large. Max limit is 2GB.' });
+    }
+    return res.status(400).json({ error: `Upload failed: ${err.message}` });
+  }
+  return res.status(500).json({ error: err.message || 'An internal server error occurred.' });
+});
+
 // Start Server
-app.listen(PORT, () => {
+const server = app.listen(PORT, () => {
   console.log(`VidNotes Server is running on http://localhost:${PORT}`);
 });
+
+// Set high timeouts for large file processing/uploads (30 minutes)
+server.timeout = 30 * 60 * 1000;
+server.keepAliveTimeout = 30 * 60 * 1000;
+server.headersTimeout = 31 * 60 * 1000;
+
