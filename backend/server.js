@@ -16,7 +16,11 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 
 // Middleware
-app.use(cors());
+app.use(cors({
+  origin: ['http://localhost:5173', 'http://localhost:5174', 'http://localhost:4173', 'http://127.0.0.1:5173'],
+  methods: ['GET', 'POST'],
+  credentials: true
+}));
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
@@ -37,15 +41,26 @@ const storage = multer.diskStorage({
   }
 });
 
+// Allowed video extensions and MIME types
+const ALLOWED_EXTENSIONS = /\.(mp4|webm|avi|mov|mkv)$/i;
+const ALLOWED_MIMETYPES = [
+  'video/mp4',
+  'video/webm',
+  'video/x-msvideo',
+  'video/quicktime',
+  'video/x-matroska',
+  'video/avi',
+  'video/msvideo'
+];
+
 const upload = multer({
   storage: storage,
   limits: { fileSize: 2 * 1024 * 1024 * 1024 }, // 2GB limit
   fileFilter: (req, file, cb) => {
-    const filetypes = /mp4|webm|avi|mov|mkv/;
-    const extname = filetypes.test(path.extname(file.originalname).toLowerCase());
-    const mimetype = filetypes.test(file.mimetype);
+    const extValid = ALLOWED_EXTENSIONS.test(path.extname(file.originalname).toLowerCase());
+    const mimeValid = ALLOWED_MIMETYPES.includes(file.mimetype) || file.mimetype.startsWith('video/');
 
-    if (mimetype && extname) {
+    if (extValid && mimeValid) {
       return cb(null, true);
     } else {
       cb(new Error('Only video files (mp4, webm, avi, mov, mkv) are allowed.'));
@@ -100,6 +115,35 @@ const responseSchema = {
   },
   required: ["english", "hinglish"]
 };
+
+// Health check endpoint
+app.get('/api/health', (req, res) => {
+  res.json({ 
+    status: 'ok', 
+    message: 'VidNotes Backend is running',
+    hasApiKey: !!process.env.GEMINI_API_KEY 
+  });
+});
+
+// Helper: safely extract text from Gemini response
+function extractResponseText(response) {
+  if (!response) return null;
+  // Handle both property and method style
+  if (typeof response.text === 'function') {
+    return response.text();
+  }
+  if (typeof response.text === 'string') {
+    return response.text;
+  }
+  // Fallback: try candidates
+  if (response.candidates && response.candidates[0]) {
+    const parts = response.candidates[0].content?.parts;
+    if (parts && parts[0] && parts[0].text) {
+      return parts[0].text;
+    }
+  }
+  return null;
+}
 
 // Route: Upload & Summarize Video
 app.post('/api/summarize', upload.single('video'), async (req, res) => {
@@ -175,11 +219,12 @@ app.post('/api/summarize', upload.single('video'), async (req, res) => {
       Ensure the Hinglish translation is natural, flowing, and highly descriptive (Latin script Hindi used in common messaging).
     `;
 
+    // Use actually existing Gemini model names (most reliable first)
     const candidateModels = [
       'gemini-2.5-flash',
-      'gemini-2.5-flash-lite',
-      'gemini-3.1-flash-lite',
-      'gemini-3.5-flash'
+      'gemini-2.0-flash',
+      'gemini-1.5-flash',
+      'gemini-1.5-pro'
     ];
 
     let response = null;
@@ -193,12 +238,17 @@ app.post('/api/summarize', upload.single('video'), async (req, res) => {
           model: modelName,
           contents: [
             {
-              fileData: {
-                fileUri: uploadResult.uri,
-                mimeType: uploadResult.mimeType
-              }
-            },
-            { text: prompt }
+              role: 'user',
+              parts: [
+                {
+                  fileData: {
+                    fileUri: uploadResult.uri,
+                    mimeType: uploadResult.mimeType
+                  }
+                },
+                { text: prompt }
+              ]
+            }
           ],
           config: {
             responseMimeType: 'application/json',
@@ -232,8 +282,25 @@ app.post('/api/summarize', upload.single('video'), async (req, res) => {
       console.log("Cleaned up local temporary video file.");
     }
 
-    // Parse and return JSON
-    const parsedData = JSON.parse(response.text);
+    // Safely extract and parse JSON response
+    const responseText = extractResponseText(response);
+    if (!responseText) {
+      throw new Error('No response text received from Gemini. The model may have returned an empty response.');
+    }
+
+    let parsedData;
+    try {
+      parsedData = JSON.parse(responseText);
+    } catch (parseErr) {
+      console.error("JSON Parse Error. Raw response:", responseText.substring(0, 500));
+      throw new Error('Failed to parse Gemini response as JSON. The model returned an unexpected format.');
+    }
+
+    // Validate the parsed data has the expected structure
+    if (!parsedData.english || !parsedData.hinglish) {
+      throw new Error('Gemini response is missing required fields (english/hinglish). Please try again.');
+    }
+
     return res.json({
       success: true,
       videoName: file.originalname,
@@ -276,4 +343,3 @@ const server = app.listen(PORT, () => {
 server.timeout = 30 * 60 * 1000;
 server.keepAliveTimeout = 30 * 60 * 1000;
 server.headersTimeout = 31 * 60 * 1000;
-

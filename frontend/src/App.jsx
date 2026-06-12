@@ -371,8 +371,8 @@ export default function App() {
     formData.append('video', file);
 
     try {
-      const apiBaseUrl = import.meta.env.VITE_API_URL || 'http://localhost:3000';
-      const response = await fetch(`${apiBaseUrl}/api/summarize`, {
+      // Use relative URL - Vite proxy forwards /api to backend
+      const response = await fetch('/api/summarize', {
         method: 'POST',
         body: formData
       });
@@ -383,10 +383,23 @@ export default function App() {
       setIsProcessing(true);
       setProcessingStatus("Gemini is analyzing video transcript...");
 
+      // Check response status BEFORE parsing JSON
+      if (!response.ok) {
+        let errorMsg = `Server error (${response.status})`;
+        try {
+          const errData = await response.json();
+          errorMsg = errData.error || errorMsg;
+        } catch (parseErr) {
+          // Response wasn't JSON, use status text
+          errorMsg = response.statusText || errorMsg;
+        }
+        throw new Error(errorMsg);
+      }
+
       const data = await response.json();
 
-      if (!response.ok) {
-        throw new Error(data.error || 'Server error occurred during processing.');
+      if (!data.success || !data.results) {
+        throw new Error('Unexpected response format from server.');
       }
 
       setIsProcessing(false);
@@ -407,7 +420,10 @@ export default function App() {
       clearInterval(progressInterval);
       setIsUploading(false);
       setIsProcessing(false);
-      setErrorMessage(err.message || "Failed to analyze video. Make sure server is running and API key is set.");
+      const message = err.name === 'TypeError' && err.message === 'Failed to fetch'
+        ? 'Cannot connect to backend server. Make sure the backend is running on port 3000.'
+        : (err.message || "Failed to analyze video. Make sure server is running and API key is set.");
+      setErrorMessage(message);
       console.error(err);
     }
   };
