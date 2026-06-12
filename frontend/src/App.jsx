@@ -431,7 +431,9 @@ export default function App() {
 
         // 30 minute timeout for large files + Gemini processing
         xhr.timeout = 30 * 60 * 1000;
-        xhr.open('POST', '/api/summarize');
+        const isLocal = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
+        const apiUrl = isLocal ? '/api/summarize' : '/_/backend/api/summarize';
+        xhr.open('POST', apiUrl);
         xhr.send(formData);
       });
 

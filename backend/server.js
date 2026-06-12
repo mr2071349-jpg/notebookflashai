@@ -16,6 +16,14 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 
 // Middleware
+// Strip Vercel multi-project route prefix if present
+app.use((req, res, next) => {
+  if (req.url.startsWith('/_/backend')) {
+    req.url = req.url.replace('/_/backend', '');
+  }
+  next();
+});
+
 app.use(cors({
   origin: ['http://localhost:5173', 'http://localhost:5174', 'http://localhost:4173', 'http://127.0.0.1:5173'],
   methods: ['GET', 'POST'],
