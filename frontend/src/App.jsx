@@ -160,6 +160,7 @@ export default function App() {
   const [sidebarIndex, setSidebarIndex] = useState(0);
   const [errorMessage, setErrorMessage] = useState("");
   const [toastMessage, setToastMessage] = useState("");
+  const [elapsedTime, setElapsedTime] = useState(0);
 
   const fileInputRef = useRef(null);
   const videoPlayerRef = useRef(null);
@@ -325,6 +326,18 @@ export default function App() {
     return () => clearInterval(interval);
   }, [isProcessing]);
 
+  // Elapsed time counter during processing
+  useEffect(() => {
+    if (!isProcessing) {
+      setElapsedTime(0);
+      return;
+    }
+    const timer = setInterval(() => {
+      setElapsedTime(prev => prev + 1);
+    }, 1000);
+    return () => clearInterval(timer);
+  }, [isProcessing]);
+
   // Handle Drag & Drop events
   const handleDragOver = (e) => {
     e.preventDefault();
@@ -354,53 +367,73 @@ export default function App() {
     setVideoUrl(URL.createObjectURL(file));
     setResults(null);
     setIsUploading(true);
-    setUploadProgress(10);
-
-    // Dynamic fake upload progress
-    const progressInterval = setInterval(() => {
-      setUploadProgress(prev => {
-        if (prev >= 90) {
-          clearInterval(progressInterval);
-          return 90;
-        }
-        return prev + 10;
-      });
-    }, 500);
+    setUploadProgress(0);
 
     const formData = new FormData();
     formData.append('video', file);
 
     try {
-      // Use relative URL - Vite proxy forwards /api to backend
-      const response = await fetch('/api/summarize', {
-        method: 'POST',
-        body: formData
+      // Use XMLHttpRequest for real upload progress tracking
+      const data = await new Promise((resolve, reject) => {
+        const xhr = new XMLHttpRequest();
+
+        // Track real upload progress
+        xhr.upload.addEventListener('progress', (e) => {
+          if (e.lengthComputable) {
+            const percent = Math.round((e.loaded / e.total) * 100);
+            setUploadProgress(percent);
+          }
+        });
+
+        // Upload complete → switch to processing state
+        xhr.upload.addEventListener('load', () => {
+          setUploadProgress(100);
+          // Small delay so user sees 100% before switching to processing
+          setTimeout(() => {
+            setIsUploading(false);
+            setIsProcessing(true);
+            setProcessingStatus("Uploading to Gemini Cloud...");
+          }, 400);
+        });
+
+        xhr.addEventListener('load', () => {
+          if (xhr.status >= 200 && xhr.status < 300) {
+            try {
+              const parsed = JSON.parse(xhr.responseText);
+              if (!parsed.success || !parsed.results) {
+                reject(new Error('Unexpected response format from server.'));
+              } else {
+                resolve(parsed);
+              }
+            } catch (parseErr) {
+              reject(new Error('Failed to parse server response as JSON.'));
+            }
+          } else {
+            // Server returned an error status
+            let errorMsg = `Server error (${xhr.status})`;
+            try {
+              const errData = JSON.parse(xhr.responseText);
+              errorMsg = errData.error || errorMsg;
+            } catch (parseErr) {
+              errorMsg = xhr.statusText || errorMsg;
+            }
+            reject(new Error(errorMsg));
+          }
+        });
+
+        xhr.addEventListener('error', () => {
+          reject(new TypeError('Failed to fetch'));
+        });
+
+        xhr.addEventListener('timeout', () => {
+          reject(new Error('Request timed out. The video may be too large or the server took too long.'));
+        });
+
+        // 30 minute timeout for large files + Gemini processing
+        xhr.timeout = 30 * 60 * 1000;
+        xhr.open('POST', '/api/summarize');
+        xhr.send(formData);
       });
-
-      clearInterval(progressInterval);
-      setUploadProgress(100);
-      setIsUploading(false);
-      setIsProcessing(true);
-      setProcessingStatus("Gemini is analyzing video transcript...");
-
-      // Check response status BEFORE parsing JSON
-      if (!response.ok) {
-        let errorMsg = `Server error (${response.status})`;
-        try {
-          const errData = await response.json();
-          errorMsg = errData.error || errorMsg;
-        } catch (parseErr) {
-          // Response wasn't JSON, use status text
-          errorMsg = response.statusText || errorMsg;
-        }
-        throw new Error(errorMsg);
-      }
-
-      const data = await response.json();
-
-      if (!data.success || !data.results) {
-        throw new Error('Unexpected response format from server.');
-      }
 
       setIsProcessing(false);
       const newResult = {
@@ -417,9 +450,9 @@ export default function App() {
       showToast("Video summarized successfully!");
 
     } catch (err) {
-      clearInterval(progressInterval);
       setIsUploading(false);
       setIsProcessing(false);
+      setUploadProgress(0);
       const message = err.name === 'TypeError' && err.message === 'Failed to fetch'
         ? 'Cannot connect to backend server. Make sure the backend is running on port 3000.'
         : (err.message || "Failed to analyze video. Make sure server is running and API key is set.");
@@ -635,12 +668,17 @@ ${data.notes.map(n => `* ${n}`).join('\n')}
             {/* If Uploading to Backend */}
             {isUploading && (
               <div className="aspect-video bg-black/60 rounded-[2rem] flex flex-col items-center justify-center gap-6 relative">
+                <div className="w-14 h-14 rounded-full bg-primary/10 flex items-center justify-center border border-primary/20 z-10">
+                  <UploadCloud className="w-7 h-7 text-primary animate-bounce" style={{ animationDuration: '2s' }} />
+                </div>
                 <div className="text-center z-10">
                   <p className="text-sm font-semibold text-on-surface">Uploading video to server...</p>
-                  <p className="text-[11px] text-on-surface-variant mt-1">{uploadProgress}% Uploaded</p>
+                  <p className="text-[11px] text-on-surface-variant mt-1">
+                    {uploadProgress}% of {videoFile ? (videoFile.size / (1024 * 1024)).toFixed(1) + ' MB' : '...'} uploaded
+                  </p>
                 </div>
-                <div className="w-48 h-1.5 bg-white/5 rounded-full overflow-hidden border border-white/5 z-10">
-                  <div className="h-full bg-gradient-to-r from-primary to-secondary transition-all duration-300" style={{ width: `${uploadProgress}%` }}></div>
+                <div className="w-56 h-2 bg-white/5 rounded-full overflow-hidden border border-white/5 z-10">
+                  <div className="h-full bg-gradient-to-r from-primary to-secondary transition-all duration-500 ease-out rounded-full" style={{ width: `${uploadProgress}%` }}></div>
                 </div>
                 {/* Visual Glow */}
                 <div className="absolute inset-0 bg-primary/10 rounded-[2rem] filter blur-xl opacity-30"></div>
@@ -668,6 +706,12 @@ ${data.notes.map(n => `* ${n}`).join('\n')}
                   </div>
                 </div>
                 {/* Ingestion progress tracking */}
+                <div className="absolute bottom-6 left-6 flex items-center gap-2 px-4 py-2 bg-white/5 backdrop-blur-2xl border border-white/10 rounded-full">
+                  <Clock className="w-3.5 h-3.5 text-on-surface-variant" />
+                  <span className="font-label-caps text-[10px] text-on-surface-variant tracking-widest">
+                    {Math.floor(elapsedTime / 60)}:{(elapsedTime % 60).toString().padStart(2, '0')}
+                  </span>
+                </div>
                 <div className="absolute bottom-6 right-6 flex items-center gap-2 px-4 py-2 bg-secondary/20 backdrop-blur-2xl border border-secondary/40 rounded-full">
                   <div className="w-2 h-2 rounded-full bg-secondary animate-pulse"></div>
                   <span className="font-label-caps text-[10px] text-secondary tracking-widest">PROCESSING</span>
@@ -797,7 +841,7 @@ ${data.notes.map(n => `* ${n}`).join('\n')}
               
               <div className="mt-auto pt-6 border-t border-white/5">
                 <span className="text-xs font-semibold text-primary/70 animate-pulse">
-                  {isProcessing ? "Analyzing transcript patterns..." : "Upload a video file to begin..."}
+                  {isUploading ? "Uploading video to server..." : isProcessing ? `${processingStatus}` : "Upload a video file to begin..."}
                 </span>
               </div>
             </div>
